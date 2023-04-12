@@ -189,45 +189,41 @@ class BOL_API:
             return resp
 
 
-parser = argparse.ArgumentParser(description="voor facturen van een bepaalde maand, die zijn dus over vorige maand, dus 1 voor facturen december ")
-parser.add_argument('-m', default=False, help="waneer van een bepaalde maand")
-parser.add_argument('-y', default=False, help="waneer van een bepaalde jaar, ook maand nodig")
+parser = argparse.ArgumentParser(
+    description="voor facturen van een bepaalde maand, die zijn dus over vorige maand, dus 1 voor facturen december "
+)
+parser.add_argument("-m", default=False, help="waneer van een bepaalde maand")
+parser.add_argument("-y", default=False, help="waneer van een bepaalde jaar, ook maand nodig")
 args = parser.parse_args()
 
 # :02d omdat we nummer met padding nodig hebben voor api
 if args.m and args.y:
     factuur_periode_start = f"{args.y}-{int(args.m):02d}-01"
-    factuur_periode_end = f"{args.y}-{int(args.m):02d}-{(datetime(int(args.y), int(args.m), 1)+pd.offsets.MonthEnd(1)).strftime('%d')}"
+    factuur_periode_end = (
+        f"{args.y}-{int(args.m):02d}-{(datetime(int(args.y), int(args.m), 1)+pd.offsets.MonthEnd(1)).strftime('%d')}"
+    )
 elif args.m and not args.y:
     factuur_periode_start = f"{datetime.today().year}-{int(args.m):02d}-01"
     factuur_periode_end = f"{datetime.today().year}-{int(args.m):02d}-{(datetime(datetime.today().year, int(args.m), 1)+pd.offsets.MonthEnd(1)).strftime('%d')}"
 else:
     begin_date_range = pd.date_range(
-            datetime.now() - pd.DateOffset(months=1),
-            datetime.now(),
-            freq="SMS",
-        )
+        datetime.now() - pd.DateOffset(months=1),
+        datetime.now(),
+        freq="SMS",
+    )
     eind_range = begin_date_range + pd.DateOffset(days=20)
     factuur_periode_start = begin_date_range.strftime("%Y-%m-%d")[::2].values[0]
     factuur_periode_end = eind_range.strftime("%Y-%m-%d")[::2].values[0]
 
-winkel = {
-    "all_day_elektro" : "_ADE",
-    "toop_bv":"_TB",
-    "tp_shopper":"_TS",
-    "typisch_elektro":"_TE"
-}
+winkel = {"all_day_elektro": "_ADE", "toop_bv": "_TB", "tp_shopper": "_TS", "typisch_elektro": "_TE"}
 
 for webwinkel in config["bol_winkels_api"]:
-    client_id, client_secret, _, _ = [
-                        x.strip()
-                        for x in config.get("bol_winkels_api",webwinkel).split(",")
-                    ]
+    client_id, client_secret, _, _ = [x.strip() for x in config.get("bol_winkels_api", webwinkel).split(",")]
     bol_api_call = BOL_API(
-                        config["bol_api_urls"]["authorize_url"],
-                        client_id,
-                        client_secret,
-                    )
+        config["bol_api_urls"]["authorize_url"],
+        client_id,
+        client_secret,
+    )
     url = f"{config['bol_api_urls']['base_url']}/invoices?period-start-date={factuur_periode_start}&period-end-date={factuur_periode_end}"
     print(url)
     factuur_nummers_info = asyncio.run(bol_api_call.invoices_period(url))
@@ -257,26 +253,39 @@ for webwinkel in config["bol_winkels_api"]:
                     ) as f:
                         f.write(factuur_specs_info_exl.content)
 
-                    excel_file = (pd.read_excel(factuur_specs_info_exl.content).rename(
-                        columns={
-                            "Uitleg over de factuur en de specificatie is te vinden op het Partnerplatform.": "webshop",
-                            "Unnamed: 2": "Bestelnummer",
-                            "Unnamed: 4": "EAN",
-                            "Unnamed: 5": "Datum",
-                            "Unnamed: 9": "Bedrag",
-                        }
-                    )
-                    .assign(
-                        Bedrag=lambda x: pd.to_numeric(
-                            x["Bedrag"],
-                            errors="coerce",
-                        ),
-                        Bestelnummer=lambda x: pd.to_numeric(
-                            x["Bestelnummer"],
-                            errors="coerce",
-                        ),
-                    )
+                    excel_file = (
+                        pd.read_excel(factuur_specs_info_exl.content)
+                        .rename(
+                            columns={
+                                "Uitleg over de factuur en de specificatie is te vinden op het Partnerplatform.": "webshop",
+                                "Unnamed: 2": "Bestelnummer",
+                                "Unnamed: 4": "EAN",
+                                "Unnamed: 5": "Datum",
+                                "Unnamed: 9": "Bedrag",
+                            }
+                        )
+                        .assign(
+                            Bedrag=lambda x: pd.to_numeric(
+                                x["Bedrag"],
+                                errors="coerce",
+                            ),
+                            Bestelnummer=lambda x: pd.to_numeric(
+                                x["Bestelnummer"],
+                                errors="coerce",
+                            ),
+                        )
                     )
                     winkel_short = winkel.get(webwinkel)
-                    for row in excel_file.query(f"`webshop`=='Compensatie' or `webshop`=='Compensatie zoekgeraakte artikel(en)'").query("Bestelnummer >= 0").itertuples():
-                        engine_odin_db.execute("UPDATE orders_info_bol SET lim_vergoed = 1,lim_vergoed_bedrag = %s, lim_vergoed_date = %s WHERE orderid LIKE %s",row.Bedrag,row.Datum,f"{int(row.Bestelnummer)}{winkel_short}")
+                    for row in (
+                        excel_file.query(
+                            f"`webshop`=='Compensatie' or `webshop`=='Compensatie zoekgeraakte artikel(en)'"
+                        )
+                        .query("Bestelnummer >= 0")
+                        .itertuples()
+                    ):
+                        engine_odin_db.execute(
+                            "UPDATE orders_info_bol SET lim_vergoed = 1,lim_vergoed_bedrag = %s, lim_vergoed_date = %s WHERE orderid LIKE %s",
+                            row.Bedrag,
+                            row.Datum,
+                            f"{int(row.Bestelnummer)}{winkel_short}",
+                        )
