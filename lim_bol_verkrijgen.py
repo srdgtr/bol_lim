@@ -289,3 +289,16 @@ for webwinkel in config["bol_winkels_api"]:
                             row.Datum,
                             f"{int(row.Bestelnummer)}{winkel_short}",
                         )
+                    for row in (
+                        excel_file.query(
+                            f"`webshop`=='Correctie verkoopprijs artikel(en)'"
+                        )
+                        .query("Bestelnummer >= 0")
+                        .itertuples()
+                    ):
+                        engine_odin_db.execute(
+                            "UPDATE orders_info_bol SET return_vergoeding = 1,return_vergoeding_bedrag = %s, return_vergoeding_date = %s WHERE orderid LIKE %s",
+                            row.Bedrag,
+                            row.Datum,
+                            f"{int(row.Bestelnummer)}{winkel_short}",
+                        )
