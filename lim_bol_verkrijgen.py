@@ -5,6 +5,7 @@ import asyncio
 from datetime import (
     datetime,
 )
+import io
 import time
 import httpx
 import json
@@ -17,25 +18,25 @@ from pathlib import (
 )
 import pandas as pd
 import requests
-from sqlalchemy import create_engine
+from sqlalchemy import MetaData, Table, create_engine, update
 from sqlalchemy.engine.url import URL
 
-config = ConfigParser()
+ini_config = ConfigParser()
 try:
-    config.read_file(open(Path.home() / "Dropbox" / "MACRO" / "bol_export_files.ini"))
+    ini_config.read_file(open(Path.home() / "Dropbox" / "MACRO" / "bol_export_files.ini"))
 except FileNotFoundError as e:
-    config.read(Path.home() / "bol_export_files.ini")
+    ini_config.read(Path.home() / "bol_export_files.ini")
 
 odin_db = dict(
     drivername="mariadb",
-    username=config.get("database odin", "user"),
-    password=config.get("database odin", "password"),
-    host=config.get("database odin", "host"),
-    port=config.get("database odin", "port"),
-    database=config.get("database odin", "database"),
+    username=ini_config.get("database odin", "user"),
+    password=ini_config.get("database odin", "password"),
+    host=ini_config.get("database odin", "host"),
+    port=ini_config.get("database odin", "port"),
+    database=ini_config.get("database odin", "database"),
 )
 
-engine_odin_db = create_engine(URL.create(**odin_db))
+engine = create_engine(URL.create(**odin_db))
 
 
 class BOL_API:
@@ -86,8 +87,8 @@ class BOL_API:
             token = json.loads(init_request.text)["access_token"]
             if token:  # add right headers
                 post_header = {
-                    "Accept": "application/vnd.retailer.v9+json",
-                    "Content-Type": "application/vnd.retailer.v9+json",
+                    "Accept": "application/vnd.retailer.v10+json",
+                    "Content-Type": "application/vnd.retailer.v10+json",
                     "Authorization": "Bearer " + token,
                     "Connection": "keep-alive",
                 }
@@ -147,7 +148,7 @@ class BOL_API:
         url,
     ):
         async with httpx.AsyncClient() as client:
-            self.access_token["Accept"] = "application/vnd.retailer.v9+json"
+            self.access_token["Accept"] = "application/vnd.retailer.v10+json"
             resp = await client.get(
                 url,
                 headers=self.access_token,
@@ -165,7 +166,7 @@ class BOL_API:
         async with httpx.AsyncClient(timeout=timeout) as client:
             self.access_token[
                 "Accept"
-            ] = "application/vnd.retailer.v9+openxmlformats-officedocument.spreadsheetml.sheet"
+            ] = "application/vnd.retailer.v10+openxmlformats-officedocument.spreadsheetml.sheet"
             resp = await client.get(
                 url,
                 headers=self.access_token,
@@ -180,7 +181,7 @@ class BOL_API:
         url,
     ):
         async with httpx.AsyncClient() as client:
-            self.access_token["Accept"] = "application/vnd.retailer.v9+pdf"
+            self.access_token["Accept"] = "application/vnd.retailer.v10+pdf"
             resp = await client.get(
                 url,
                 headers=self.access_token,
@@ -217,14 +218,14 @@ else:
 
 winkel = {"all_day_elektro": "_ADE", "toop_bv": "_TB", "tp_shopper": "_TS", "typisch_elektro": "_TE"}
 
-for webwinkel in config["bol_winkels_api"]:
-    client_id, client_secret, _, _ = [x.strip() for x in config.get("bol_winkels_api", webwinkel).split(",")]
+for webwinkel in ini_config["bol_winkels_api"]:
+    client_id, client_secret, _, _ = [x.strip() for x in ini_config.get("bol_winkels_api", webwinkel).split(",")]
     bol_api_call = BOL_API(
-        config["bol_api_urls"]["authorize_url"],
+        ini_config["bol_api_urls"]["authorize_url"],
         client_id,
         client_secret,
     )
-    url = f"{config['bol_api_urls']['base_url']}/invoices?period-start-date={factuur_periode_start}&period-end-date={factuur_periode_end}"
+    url = f"{ini_config['bol_api_urls']['base_url']}/invoices?period-start-date={factuur_periode_start}&period-end-date={factuur_periode_end}"
     print(url)
     factuur_nummers_info = asyncio.run(bol_api_call.invoices_period(url))
     if factuur_nummers_info:
@@ -237,7 +238,7 @@ for webwinkel in config["bol_winkels_api"]:
                 factuur_nummer = None
                 print("geen factuurnummer(s) voor deze periode")
             if factuur_nummer:
-                spec_exl_url = f"{config['bol_api_urls']['base_url']}/invoices/{factuur_nummer}/specification?page="
+                spec_exl_url = f"{ini_config['bol_api_urls']['base_url']}/invoices/{factuur_nummer}/specification?page="
                 factuur_specs_info_exl = asyncio.run(bol_api_call.specs_excel_info(spec_exl_url))
                 if factuur_specs_info_exl:
                     # zo krijg ik de goede maanden er bij, is niet echt logisch, maar lijkt te werken.
@@ -254,7 +255,7 @@ for webwinkel in config["bol_winkels_api"]:
                         f.write(factuur_specs_info_exl.content)
 
                     excel_file = (
-                        pd.read_excel(factuur_specs_info_exl.content)
+                        pd.read_excel(io.BytesIO(factuur_specs_info_exl.content))
                         .rename(
                             columns={
                                 "Uitleg over de factuur en de specificatie is te vinden op het Partnerplatform.": "webshop",
@@ -269,36 +270,34 @@ for webwinkel in config["bol_winkels_api"]:
                                 x["Bedrag"],
                                 errors="coerce",
                             ),
-                            Bestelnummer=lambda x: pd.to_numeric(
-                                x["Bestelnummer"],
-                                errors="coerce",
-                            ),
                         )
                     )
                     winkel_short = winkel.get(webwinkel)
+                    metadata = MetaData()
+                    orders_info_bol = Table("orders_info_bol", metadata, autoload_with=engine)
                     for row in (
                         excel_file.query(
                             f"`webshop`=='Compensatie' or `webshop`=='Compensatie zoekgeraakte artikel(en)'"
                         )
-                        .query("Bestelnummer >= 0")
                         .itertuples()
                     ):
-                        engine_odin_db.execute(
-                            "UPDATE orders_info_bol SET lim_vergoed = 1,lim_vergoed_bedrag = %s, lim_vergoed_date = %s WHERE orderid LIKE %s",
-                            row.Bedrag,
-                            row.Datum,
-                            f"{int(row.Bestelnummer)}{winkel_short}",
+                        update_lim_vergoed = (
+                        update(orders_info_bol)
+                        .where(orders_info_bol.columns.orderid == f"{row.Bestelnummer}{winkel_short}")
+                        .values(lim_vergoed = 1,lim_vergoed_bedrag = row.Bedrag, lim_vergoed_date = row.Datum)
                         )
+                        with engine.begin() as conn:
+                            conn.execute(update_lim_vergoed)
                     for row in (
                         excel_file.query(
                             f"`webshop`=='Correctie verkoopprijs artikel(en)'"
                         )
-                        .query("Bestelnummer >= 0")
                         .itertuples()
                     ):
-                        engine_odin_db.execute(
-                            "UPDATE orders_info_bol SET return_vergoeding = 1,return_vergoeding_bedrag = %s, return_vergoeding_date = %s WHERE orderid LIKE %s",
-                            row.Bedrag,
-                            row.Datum,
-                            f"{int(row.Bestelnummer)}{winkel_short}",
+                        update_return_lim_vergoed = (
+                        update(orders_info_bol)
+                        .where(orders_info_bol.columns.orderid == f"{row.Bestelnummer}{winkel_short}")
+                        .values(return_vergoeding = 1,return_vergoeding_bedrag = row.Bedrag, return_vergoeding_date = row.Datum)
                         )
+                        with engine.begin() as conn:
+                            conn.execute(update_return_lim_vergoed)
